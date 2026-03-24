@@ -2,8 +2,14 @@
  * Message Router
  *
  * Routes incoming Telegram messages to the appropriate handler.
- * Supports commands for session, agent, cron, webhook, and skill management.
+ * Supports commands for session, agent, cron, webhook, skill management,
+ * auto-routing via intent detection, handoff context injection, and briefings.
  */
+
+import { detectIntent } from "./intent-router.js";
+import { HandoffManager } from "../sessions/handoff.js";
+import { runBriefing } from "../workflows/briefing.js";
+import config from "../config.js";
 
 export class Router {
   constructor(sessionManager, opts = {}) {
@@ -12,6 +18,7 @@ export class Router {
     this.webhookServer = opts.webhookServer || null;
     this.skillLoader = opts.skillLoader || null;
     this.agentLoader = opts.agentLoader || null;
+    this.handoff = opts.handoff || null;
     /** @type {Map<string, string>} chatId → workdir override */
     this.workdirMap = new Map();
     /** @type {Map<string, string>} chatId → agent name */
@@ -44,6 +51,7 @@ export class Router {
       "/webhooks": () => this._cmdWebhookList(chatId),
       "/unwebhook": () => this._cmdWebhookRemove(args),
       "/skills": () => this._cmdSkills(),
+      "/briefing": () => this._cmdBriefing(chatId, args, opts),
     };
 
     if (commands[cmdLower]) {
@@ -57,9 +65,8 @@ export class Router {
   // ── Help ──
 
   _cmdHelp() {
-    const agentName = null; // shown in status
     return [
-      "🤖 *claud.i* — Personal Claude Code Assistant\n",
+      "🦾 *Jarvis* — Personal AI Assistant\n",
       "*Session*",
       "  /project <path> — Set working directory",
       "  /reset — Reset conversation",
@@ -68,6 +75,10 @@ export class Router {
       "  /agents — List available agents",
       "  /agent <name> — Switch agent role",
       "  /agent off — Return to default mode\n",
+      "*Briefing*",
+      "  /briefing — Generate morning/evening briefing",
+      "  /briefing 오전 — Force morning briefing",
+      "  /briefing 오후 — Force evening briefing\n",
       "*Cron*",
       "  /cron <schedule> <prompt> — Add scheduled task",
       "  /crons — List tasks",
@@ -79,6 +90,7 @@ export class Router {
       "*Skills*",
       "  /skills — List loaded skills\n",
       "Send text, photos, files, or voice messages.",
+      "Agent auto-routing is active — no need to switch manually.",
     ].join("\n");
   }
 
@@ -124,13 +136,13 @@ export class Router {
         const agent = this.agentLoader.get(current);
         return `Current agent: ${agent?.icon || "🤖"} *${current}* — ${agent?.description || ""}\n\nUse \`/agent off\` to return to default.`;
       }
-      return "No agent selected. Use `/agents` to see available agents.";
+      return "No agent selected. Auto-routing is active.\nUse `/agents` to see available agents.";
     }
 
     if (subCmd === "off" || subCmd === "default" || subCmd === "none") {
       this.agentMap.delete(chatId);
       this.sessionManager.resetSession(`telegram:${chatId}`);
-      return "Agent deactivated. Back to default mode. Session reset.";
+      return "Agent deactivated. Back to auto-routing mode. Session reset.";
     }
 
     const agent = this.agentLoader.get(subCmd);
@@ -164,7 +176,43 @@ export class Router {
       `*Available Agents (${agents.length})*\n`,
       ...lines,
       "\nUse `/agent <name>` to activate.",
+      "Auto-routing is also active for automatic agent selection.",
     ].join("\n");
+  }
+
+  // ── Briefing ──
+
+  async _cmdBriefing(chatId, args, opts = {}) {
+    const periodArg = args[0];
+    const briefingOpts = {};
+
+    if (periodArg === "오전" || periodArg === "morning") {
+      briefingOpts.period = "오전";
+    } else if (periodArg === "오후" || periodArg === "evening") {
+      briefingOpts.period = "오후";
+    }
+
+    try {
+      const result = await runBriefing(this.sessionManager, {
+        ...briefingOpts,
+        onChunk: opts.onChunk,
+      });
+
+      // Update handoff with briefing context
+      if (this.handoff) {
+        this.handoff.update({
+          agent: "analyst",
+          topic: `브리핑 생성 (${briefingOpts.period || "auto"})`,
+          keyContext: ["briefing generated"],
+        });
+      }
+
+      // Return the short version for Telegram
+      return result.short || result.raw;
+    } catch (err) {
+      console.error("[Router] Briefing error:", err.message);
+      return `브리핑 생성 중 오류가 발생했습니다: ${err.message}`;
+    }
   }
 
   // ── Cron ──
@@ -251,16 +299,37 @@ export class Router {
     const contextKey = `telegram:${chatId}`;
     const workdir = this.workdirMap.get(chatId) || undefined;
 
-    // Build prompt with agent + skill context
+    // Build prompt with handoff + agent + skill context
     let prompt = "";
 
-    // Agent system prompt
-    const agentName = this.agentMap.get(chatId);
+    // 1. Inject handoff context from previous session
+    if (this.handoff) {
+      prompt += this.handoff.buildPromptPrefix();
+    }
+
+    // 2. Determine agent: manual override > auto-detect > default (jarvis)
+    let agentName = this.agentMap.get(chatId);
+    let autoRouted = false;
+
+    if (!agentName && this.agentLoader) {
+      // Auto-detect intent from agent trigger keywords
+      const detectedAgent = detectIntent(this.agentLoader, message);
+      if (detectedAgent) {
+        agentName = detectedAgent;
+        autoRouted = true;
+      } else {
+        // Fall back to default agent (marked with default: true in frontmatter)
+        const defaultName = this.agentLoader.getDefaultName();
+        if (defaultName) agentName = defaultName;
+      }
+    }
+
+    // 3. Agent system prompt
     if (agentName && this.agentLoader) {
       prompt += this.agentLoader.buildPromptPrefix(agentName);
     }
 
-    // Skill context
+    // 4. Skill context
     if (this.skillLoader) {
       const skillCtx = this.skillLoader.buildSkillContext(message);
       if (skillCtx) prompt += skillCtx;
@@ -275,6 +344,18 @@ export class Router {
         workdir,
         { onChunk: opts.onChunk, files: opts.files }
       );
+
+      // Update handoff after successful response
+      if (this.handoff) {
+        this.handoff.update({
+          agent: agentName || "default",
+          topic: HandoffManager.extractTopic(message),
+          keyContext: [
+            `${autoRouted ? "(auto)" : "(manual)"} agent: ${agentName || "default"}`,
+          ],
+        });
+      }
+
       return { type: "claude", response };
     } catch (err) {
       console.error(`[Router] Error for ${contextKey}:`, err.message);

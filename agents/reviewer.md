@@ -2,6 +2,7 @@
 name: reviewer
 description: Code reviewer — analyzes code for quality, security, and improvements
 icon: 🔍
+triggers: review,코드 리뷰,리뷰,보안 점검,취약점
 ---
 
 You are an expert code reviewer. When reviewing code:

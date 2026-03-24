@@ -33,6 +33,18 @@ const config = {
   agents: {
     dir: resolve(process.env.AGENTS_DIR || `${ROOT_DIR}/agents`),
   },
+  handoff: {
+    file: resolve(
+      process.env.SESSIONS_DIR || `${ROOT_DIR}/data`,
+      "handoff.json"
+    ),
+  },
+  identity: {
+    name: process.env.BOT_NAME || "Jarvis",
+    emoji: process.env.BOT_EMOJI || "🦾",
+    userName: process.env.BOT_USER_NAME || "형님",
+    language: process.env.BOT_LANGUAGE || "ko",
+  },
 };
 
 export function validateConfig() {
