@@ -1,13 +1,5 @@
 /**
  * claud.i Configuration
- *
- * Environment variables:
- *   TELEGRAM_BOT_TOKEN  - Telegram Bot API token (from @BotFather)
- *   TELEGRAM_ALLOWED_USERS - Comma-separated Telegram user IDs (security allowlist)
- *   CLAUDE_PATH         - Path to claude CLI (default: "claude")
- *   SESSIONS_DIR        - Directory for session data (default: ./data)
- *   SESSION_IDLE_TIMEOUT - Minutes before idle session is closed (default: 30)
- *   MAX_SESSIONS        - Maximum concurrent Claude sessions (default: 5)
  */
 
 import { resolve, dirname } from "path";
@@ -31,6 +23,13 @@ const config = {
     idleTimeoutMinutes: parseInt(process.env.SESSION_IDLE_TIMEOUT || "30", 10),
     maxConcurrent: parseInt(process.env.MAX_SESSIONS || "5", 10),
   },
+  webhook: {
+    enabled: process.env.WEBHOOK_ENABLED !== "false",
+    port: parseInt(process.env.WEBHOOK_PORT || "3000", 10),
+  },
+  skills: {
+    dir: resolve(process.env.SKILLS_DIR || `${ROOT_DIR}/skills`),
+  },
 };
 
 export function validateConfig() {
@@ -42,9 +41,6 @@ export function validateConfig() {
   if (config.telegram.allowedUsers.length === 0) {
     console.warn(
       "WARNING: TELEGRAM_ALLOWED_USERS is empty — bot will accept messages from ANYONE"
-    );
-    console.warn(
-      '  Set it to your Telegram user ID(s) for security, e.g. "123456789"'
     );
   }
 }

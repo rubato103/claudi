@@ -52,12 +52,18 @@ export class SessionManager {
 
   /**
    * Send a message in the given context, return Claude's response.
+   * @param {string} contextKey
+   * @param {string} message
+   * @param {string} [workdir]
+   * @param {object} [opts]
+   * @param {function} [opts.onChunk] - Streaming callback: (textSoFar) => void
+   * @param {string[]} [opts.files] - File paths to attach
    */
-  async sendMessage(contextKey, message, workdir) {
+  async sendMessage(contextKey, message, workdir, opts = {}) {
     const session = this.getSession(contextKey, workdir);
 
     try {
-      const response = await session.send(message);
+      const response = await session.send(message, opts);
 
       // Persist session state
       this.store.set(contextKey, {
