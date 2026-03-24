@@ -13,6 +13,7 @@ import { TelegramBot } from "./telegram/bot.js";
 import { CronScheduler } from "./cron/scheduler.js";
 import { WebhookServer } from "./webhook/server.js";
 import { SkillLoader } from "./skills/skill-loader.js";
+import { AgentLoader } from "./agents/agent-loader.js";
 
 console.log(`
    _____ _                 _   _
@@ -30,6 +31,7 @@ validateConfig();
 // Initialize core
 const sessionManager = new SessionManager();
 const skillLoader = new SkillLoader(config.skills.dir);
+const agentLoader = new AgentLoader(config.agents.dir);
 
 // Initialize telegram bot (need reference for sendToChat)
 let bot;
@@ -57,6 +59,7 @@ const router = new Router(sessionManager, {
   cronScheduler,
   webhookServer,
   skillLoader,
+  agentLoader,
 });
 
 // Initialize bot
@@ -86,6 +89,7 @@ async function start() {
   console.log(`  Cron:     ${cronScheduler.listJobs().length} jobs`);
   console.log(`  Webhook:  ${webhookServer ? `port ${config.webhook.port}` : "disabled"}`);
   console.log(`  Skills:   ${skillLoader.list().length} loaded`);
+  console.log(`  Agents:   ${agentLoader.list().length} available`);
 }
 
 start().catch((err) => {

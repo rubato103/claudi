@@ -2,21 +2,7 @@
  * Message Router
  *
  * Routes incoming Telegram messages to the appropriate handler.
- * Supports commands for session, cron, webhook, and skill management.
- *
- * Commands:
- *   /start              - Welcome message
- *   /reset              - Reset current session
- *   /sessions           - List active sessions
- *   /project <path>     - Set working directory
- *   /cron <schedule> <prompt> - Add a cron job
- *   /crons              - List cron jobs
- *   /uncron <id>        - Remove a cron job
- *   /webhook <name> [template] - Register a webhook
- *   /webhooks           - List webhooks
- *   /unwebook <id>      - Remove a webhook
- *   /skills             - List loaded skills
- *   /help               - Show all commands
+ * Supports commands for session, agent, cron, webhook, and skill management.
  */
 
 export class Router {
@@ -25,8 +11,11 @@ export class Router {
     this.cronScheduler = opts.cronScheduler || null;
     this.webhookServer = opts.webhookServer || null;
     this.skillLoader = opts.skillLoader || null;
+    this.agentLoader = opts.agentLoader || null;
     /** @type {Map<string, string>} chatId → workdir override */
     this.workdirMap = new Map();
+    /** @type {Map<string, string>} chatId → agent name */
+    this.agentMap = new Map();
   }
 
   /**
@@ -40,17 +29,18 @@ export class Router {
     const [cmd, ...args] = trimmed.split(/\s+/);
     const cmdLower = cmd?.toLowerCase();
 
-    // Command routing
     const commands = {
       "/start": () => this._cmdHelp(),
       "/help": () => this._cmdHelp(),
       "/reset": () => this._cmdReset(chatId),
       "/sessions": () => this._cmdSessions(),
       "/project": () => this._cmdProject(chatId, args),
-      "/cron": () => this._cmdCronAdd(chatId, args, trimmed),
+      "/agent": () => this._cmdAgent(chatId, args),
+      "/agents": () => this._cmdAgentList(),
+      "/cron": () => this._cmdCronAdd(chatId, args),
       "/crons": () => this._cmdCronList(chatId),
       "/uncron": () => this._cmdCronRemove(args),
-      "/webhook": () => this._cmdWebhookAdd(chatId, args, trimmed),
+      "/webhook": () => this._cmdWebhookAdd(chatId, args),
       "/webhooks": () => this._cmdWebhookList(chatId),
       "/unwebhook": () => this._cmdWebhookRemove(args),
       "/skills": () => this._cmdSkills(),
@@ -61,23 +51,26 @@ export class Router {
       return { type: "command", response };
     }
 
-    // Regular message → Claude
     return this._sendToClaude(chatId, trimmed, opts);
   }
 
-  // ── Commands ──
+  // ── Help ──
 
   _cmdHelp() {
+    const agentName = null; // shown in status
     return [
       "🤖 *claud.i* — Personal Claude Code Assistant\n",
       "*Session*",
       "  /project <path> — Set working directory",
       "  /reset — Reset conversation",
       "  /sessions — List active sessions\n",
+      "*Agent*",
+      "  /agents — List available agents",
+      "  /agent <name> — Switch agent role",
+      "  /agent off — Return to default mode\n",
       "*Cron*",
       "  /cron <schedule> <prompt> — Add scheduled task",
-      '  Example: `/cron 0 9 * * * Daily news summary`',
-      "  /crons — List scheduled tasks",
+      "  /crons — List tasks",
       "  /uncron <id> — Remove task\n",
       "*Webhook*",
       "  /webhook <name> [template] — Register webhook",
@@ -85,14 +78,16 @@ export class Router {
       "  /unwebhook <id> — Remove webhook\n",
       "*Skills*",
       "  /skills — List loaded skills\n",
-      "Send any text message to chat with Claude.",
-      "Send photos, files, or voice messages — they'll be processed too.",
+      "Send text, photos, files, or voice messages.",
     ].join("\n");
   }
 
+  // ── Session ──
+
   _cmdReset(chatId) {
     this.sessionManager.resetSession(`telegram:${chatId}`);
-    return "Session reset. Starting fresh.";
+    this.agentMap.delete(chatId);
+    return "Session and agent reset. Starting fresh.";
   }
 
   _cmdSessions() {
@@ -116,10 +111,66 @@ export class Router {
     return `Project set to \`${path}\`. Session reset.`;
   }
 
-  _cmdCronAdd(chatId, args, raw) {
+  // ── Agent ──
+
+  _cmdAgent(chatId, args) {
+    if (!this.agentLoader) return "Agent system not available.";
+
+    const subCmd = args[0]?.toLowerCase();
+
+    if (!subCmd) {
+      const current = this.agentMap.get(chatId);
+      if (current) {
+        const agent = this.agentLoader.get(current);
+        return `Current agent: ${agent?.icon || "🤖"} *${current}* — ${agent?.description || ""}\n\nUse \`/agent off\` to return to default.`;
+      }
+      return "No agent selected. Use `/agents` to see available agents.";
+    }
+
+    if (subCmd === "off" || subCmd === "default" || subCmd === "none") {
+      this.agentMap.delete(chatId);
+      this.sessionManager.resetSession(`telegram:${chatId}`);
+      return "Agent deactivated. Back to default mode. Session reset.";
+    }
+
+    const agent = this.agentLoader.get(subCmd);
+    if (!agent) {
+      const available = this.agentLoader
+        .list()
+        .map((a) => a.name)
+        .join(", ");
+      return `Agent \`${subCmd}\` not found.\nAvailable: ${available}`;
+    }
+
+    const previousAgent = this.agentMap.get(chatId);
+    this.agentMap.set(chatId, agent.name);
+
+    // Reset session when switching agents to avoid context bleed
+    if (previousAgent !== agent.name) {
+      this.sessionManager.resetSession(`telegram:${chatId}`);
+    }
+
+    return `${agent.icon} Agent switched to *${agent.name}*\n${agent.description}\n\nSession reset for clean context.`;
+  }
+
+  _cmdAgentList() {
+    if (!this.agentLoader) return "Agent system not available.";
+    const agents = this.agentLoader.list();
+    if (agents.length === 0) return "No agents available.";
+    const lines = agents.map(
+      (a) => `${a.icon} *${a.name}* — ${a.description}`
+    );
+    return [
+      `*Available Agents (${agents.length})*\n`,
+      ...lines,
+      "\nUse `/agent <name>` to activate.",
+    ].join("\n");
+  }
+
+  // ── Cron ──
+
+  _cmdCronAdd(chatId, args) {
     if (!this.cronScheduler) return "Cron scheduler not available.";
-    // Parse: /cron <5 cron fields> <prompt>
-    // Example: /cron 0 9 * * * Daily news summary
     if (args.length < 6) {
       return "Usage: `/cron <min> <hour> <day> <month> <weekday> <prompt>`\nExample: `/cron 0 9 * * * Summarize today's news`";
     }
@@ -149,7 +200,9 @@ export class Router {
       : `Job \`${id}\` not found.`;
   }
 
-  _cmdWebhookAdd(chatId, args, raw) {
+  // ── Webhook ──
+
+  _cmdWebhookAdd(chatId, args) {
     if (!this.webhookServer) return "Webhook server not available.";
     const name = args[0];
     if (!name) {
@@ -179,6 +232,8 @@ export class Router {
       : `Webhook \`${id}\` not found.`;
   }
 
+  // ── Skills ──
+
   _cmdSkills() {
     if (!this.skillLoader) return "Skills not available.";
     const skills = this.skillLoader.list();
@@ -196,12 +251,22 @@ export class Router {
     const contextKey = `telegram:${chatId}`;
     const workdir = this.workdirMap.get(chatId) || undefined;
 
-    // Prepend skill context if available
-    let prompt = message;
+    // Build prompt with agent + skill context
+    let prompt = "";
+
+    // Agent system prompt
+    const agentName = this.agentMap.get(chatId);
+    if (agentName && this.agentLoader) {
+      prompt += this.agentLoader.buildPromptPrefix(agentName);
+    }
+
+    // Skill context
     if (this.skillLoader) {
       const skillCtx = this.skillLoader.buildSkillContext(message);
-      if (skillCtx) prompt = skillCtx + message;
+      if (skillCtx) prompt += skillCtx;
     }
+
+    prompt += message;
 
     try {
       const response = await this.sessionManager.sendMessage(

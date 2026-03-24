@@ -30,6 +30,9 @@ const config = {
   skills: {
     dir: resolve(process.env.SKILLS_DIR || `${ROOT_DIR}/skills`),
   },
+  agents: {
+    dir: resolve(process.env.AGENTS_DIR || `${ROOT_DIR}/agents`),
+  },
 };
 
 export function validateConfig() {
