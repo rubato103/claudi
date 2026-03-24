@@ -1,0 +1,20 @@
+{
+  "name": "claudi",
+  "version": "0.1.0",
+  "description": "Personal AI assistant powered by Claude Code — always-on Telegram bot with multi-session support",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "keywords": ["claude", "telegram", "ai-assistant", "claude-code"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "grammy": "^1.35.0",
+    "better-sqlite3": "^11.8.0"
+  }
+}

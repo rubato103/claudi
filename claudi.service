@@ -1,0 +1,20 @@
+[Unit]
+Description=claud.i — Personal AI Assistant
+After=network.target
+
+[Service]
+Type=simple
+User=claudi
+WorkingDirectory=/opt/claudi
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=10
+EnvironmentFile=/opt/claudi/.env
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/claudi/data
+
+[Install]
+WantedBy=multi-user.target
