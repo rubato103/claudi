@@ -1,81 +1,74 @@
 /**
  * Session Store
  *
- * Persistent storage for session metadata using SQLite.
- * Survives process restarts so sessions can be resumed.
+ * Persistent storage for session metadata using a JSON file.
+ * No native dependencies — works on any platform.
  */
 
-import Database from "better-sqlite3";
-import { resolve } from "path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { resolve, dirname } from "path";
 
 export class SessionStore {
   constructor(dataDir) {
-    const dbPath = resolve(dataDir, "sessions.db");
-    this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL");
-    this._init();
+    mkdirSync(dataDir, { recursive: true });
+    this.filePath = resolve(dataDir, "sessions.json");
+    this.data = {};
+    this._load();
   }
 
-  _init() {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS sessions (
-        context_key TEXT PRIMARY KEY,
-        resume_session_id TEXT,
-        workdir TEXT,
-        last_activity INTEGER,
-        created_at INTEGER DEFAULT (unixepoch()),
-        updated_at INTEGER DEFAULT (unixepoch())
-      )
-    `);
+  _load() {
+    try {
+      if (existsSync(this.filePath)) {
+        const raw = readFileSync(this.filePath, "utf-8");
+        this.data = JSON.parse(raw);
+      }
+    } catch (err) {
+      console.warn("[SessionStore] Failed to load, starting fresh:", err.message);
+      this.data = {};
+    }
+  }
 
-    this._stmtGet = this.db.prepare(
-      "SELECT * FROM sessions WHERE context_key = ?"
-    );
-    this._stmtSet = this.db.prepare(`
-      INSERT INTO sessions (context_key, resume_session_id, workdir, last_activity, updated_at)
-      VALUES (@contextKey, @resumeSessionId, @workdir, @lastActivity, unixepoch())
-      ON CONFLICT(context_key) DO UPDATE SET
-        resume_session_id = @resumeSessionId,
-        workdir = @workdir,
-        last_activity = @lastActivity,
-        updated_at = unixepoch()
-    `);
-    this._stmtDelete = this.db.prepare(
-      "DELETE FROM sessions WHERE context_key = ?"
-    );
-    this._stmtAll = this.db.prepare(
-      "SELECT * FROM sessions ORDER BY last_activity DESC"
-    );
+  _save() {
+    try {
+      writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), "utf-8");
+    } catch (err) {
+      console.error("[SessionStore] Failed to save:", err.message);
+    }
   }
 
   get(contextKey) {
-    const row = this._stmtGet.get(contextKey);
+    const row = this.data[contextKey];
     if (!row) return null;
     return {
-      resumeSessionId: row.resume_session_id,
+      resumeSessionId: row.resumeSessionId,
       workdir: row.workdir,
-      lastActivity: row.last_activity,
+      lastActivity: row.lastActivity,
     };
   }
 
   set(contextKey, data) {
-    this._stmtSet.run({
-      contextKey,
+    this.data[contextKey] = {
       resumeSessionId: data.resumeSessionId || null,
       workdir: data.workdir || null,
       lastActivity: data.lastActivity || Date.now(),
-    });
+      updatedAt: Date.now(),
+    };
+    this._save();
   }
 
   delete(contextKey) {
-    this._stmtDelete.run(contextKey);
+    delete this.data[contextKey];
+    this._save();
   }
 
   all() {
-    return this._stmtAll.all();
+    return Object.entries(this.data).map(([key, val]) => ({
+      context_key: key,
+      ...val,
+    }));
   }
 
   close() {
-    this.db.close();
+    this._save();
   }
 }
